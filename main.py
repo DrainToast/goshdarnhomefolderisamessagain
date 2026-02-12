@@ -1,9 +1,9 @@
 import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase, BatchEncoding
+from transformers import PreTrainedTokenizerBase
 from sentence_transformers import SentenceTransformer
 from typing import cast
 from datetime import datetime
-import filetype as ft# type: ignore
+import filetype as ft  # type: ignore
 from docx import Document as Document_docx
 from keybert import KeyBERT # type: ignore
 from keyphrase_vectorizers import KeyphraseCountVectorizer # type: ignore
@@ -11,7 +11,6 @@ from pathlib import Path
 from pydantic import BaseModel
 import emoji
 import io
-import mammoth # type: ignore
 import regex as re
 import unicodedata
 
@@ -66,10 +65,17 @@ class BaseClass():
             else:
                 pass
 
+
+        self._device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+        if self._device.type == "cuda":
+            torch.cuda.set_device(self._device)
+            torch.cuda.empty_cache()
+            torch.backends.cudnn.benchmark = True
+            torch.backends.cuda.matmul.allow_tf32 = True
+            torch.backends.cudnn.allow_tf32 = True
+
         self._keywords_model_initialized = False
         self._categories_model_initialized = False
-
-        self._device: torch.device
 
         self._vectorizer: KeyphraseCountVectorizer
         self._keyword_model: KeyBERT
@@ -165,27 +171,20 @@ class BaseClass():
             else:
                 raise FileNotFoundError("categories.txt not found")
 
-            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-            if device.type == "cuda":
-                torch.cuda.set_device(device)
-                torch.cuda.empty_cache()
-                torch.backends.cudnn.benchmark = True
-                torch.backends.cuda.matmul.allow_tf32 = True
-                torch.backends.cudnn.allow_tf32 = True
 
             self._categories_embeddings = self._categories_model.encode(
                 self._categories,
                 convert_to_tensor=True,
                 batch_size=64,
-                device=device
+                device=[self._device]
             )
 
-        self._categories_model_initialized = True
+            self._categories_model_initialized = True
 
         doc_embedding = self._categories_model.encode(
             doc.text,
             convert_to_tensor=True,
-            device=device
+            device=[self._device]
         )
 
         cos_scores = torch.nn.functional.cosine_similarity(
