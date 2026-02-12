@@ -1,4 +1,6 @@
-from ast import Bytes
+import torch
+from transformers import AutoModelForSequenceClassification, AutoTokenizer, PreTrainedModel, PreTrainedTokenizerBase, BatchEncoding
+from sentence_transformers import SentenceTransformer
 from typing import cast
 from datetime import datetime
 import filetype as ft# type: ignore
@@ -64,14 +66,21 @@ class BaseClass():
             else:
                 pass
 
-        self._keyword_model_loaded: bool = False
-        self._categories_model_loaded: bool = False
-        self._summary_model_loaded: bool = False
+        self._keywords_model_initialized = False
+        self._categories_model_initialized = False
+
+        self._device: torch.device
 
         self._vectorizer: KeyphraseCountVectorizer
         self._keyword_model: KeyBERT
+        self._categories_model: SentenceTransformer
+        self._categories_tokenizer: PreTrainedTokenizerBase
+
+        self._entailment_id: int = 2
 
         self._seed_keywords: list[str] = [""]
+        self._categories: list[str] = [""]
+        self._categories_embeddings: torch.Tensor
 
 
     def extract_document_content(self, doc: _Document) -> None:
@@ -105,7 +114,7 @@ class BaseClass():
 
 
     def get_document_keywords(self, doc: _Document, score: float) -> None:
-        if not self._keyword_model_loaded:
+        if not self._keywords_model_initialized:
             self._vectorizer =  KeyphraseCountVectorizer(
                 pos_pattern=r'<J.*>*<N.*>+|<N.*>+|<PROPN.*>+',
                 stop_words='english',
@@ -139,15 +148,70 @@ class BaseClass():
             if prob >= score
         ]
 
+    def get_document_categories(self, doc: _Document) -> None:
+        if not doc.text or not doc.text.strip():
+            raise ValueError("Document text is empty")
 
-    def get_document_categories(self) -> None:
-        pass
+        if not self._categories_model_initialized:
+            self._categories_model = SentenceTransformer("BAAI/bge-base-en-v1.5")
+
+            if Path("categories.txt").exists():
+                self._categories = [
+                    line.strip()
+                    for line
+                    in Path("categories.txt").read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+            else:
+                raise FileNotFoundError("categories.txt not found")
+
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            if device.type == "cuda":
+                torch.cuda.set_device(device)
+                torch.cuda.empty_cache()
+                torch.backends.cudnn.benchmark = True
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+
+            self._categories_embeddings = self._categories_model.encode(
+                self._categories,
+                convert_to_tensor=True,
+                batch_size=64,
+                device=device
+            )
+
+        self._categories_model_initialized = True
+
+        doc_embedding = self._categories_model.encode(
+            doc.text,
+            convert_to_tensor=True,
+            device=device
+        )
+
+        cos_scores = torch.nn.functional.cosine_similarity(
+            doc_embedding.unsqueeze(0),
+            self._categories_embeddings,
+            dim=1
+        )
+
+        top_k = 200
+        top_probs, top_indices = torch.topk((cos_scores + 1) / 2, k=top_k)
+
+        top_categories = [
+            {"label": self._categories[int(idx)], "score": float(score)}
+            for idx, score in zip(top_indices, top_probs)
+        ]
+
+        for i in top_categories:
+            print(i)
+
+
 
 if __name__ == "__main__":
     bc = BaseClass(PATH)
     doc = bc.docs[11]
     bc.extract_document_content(doc)
     # bc.get_document_keywords(doc, 0.25)
-    print(doc.text)
+    bc.get_document_categories(doc)
 
 
